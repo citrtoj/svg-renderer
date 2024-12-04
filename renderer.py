@@ -25,20 +25,22 @@ class Renderer:
             raise ValueError("No image found!")
         return math.sqrt(self.size[0] ** 2 + self.size[1] ** 2)
 
-    def _parse_length(self, value: str):
-        match = re.match(r"^([0-9]*.?[0-9])(?P<percent>%)?$", value)
+    @staticmethod
+    def _parse_percent(value_str: str, value_on_no_percent, value_on_percent):
+        match = re.match(r"^([0-9]*.?[0-9])(?P<percent>%)?$", value_str)
         if match:
             if match.groupdict()["percent"] is None:
-                return int(float(match))
-            return int(float(match) / 100 * self._diagonal_length())
+                return value_on_no_percent(value_str)
+            return value_on_percent(value_str)
+
+    def _parse_length(self, value: str):
+        return Renderer._parse_percent(
+            value, lambda x: int(float(x)), lambda x: int(float(x) / 100 * self._diagonal_length())
+        )
 
     @staticmethod
     def _parse_opacity(value: str) -> int:
-        match = re.match(r"^([0-9]*.?[0-9])(?P<percent>%)?$", value)
-        if match:
-            if match.groupdict()["percent"] is None:
-                return float(value)
-            return float(match) / 100
+        return Renderer._parse_percent(value, lambda x: float(x), lambda x: float(x) * 100)
 
     def _update_attributes(self, node, old_attributes=None):
         if not old_attributes:
