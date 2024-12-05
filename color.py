@@ -2,23 +2,41 @@ import re
 from typing import Union
 
 
+def return_none_if_empty(f):
+    def wrapper(self, *args, **kwargs):
+        if self.is_empty():
+            return None
+        return f(self, *args, **kwargs)
+
+    return wrapper
+
+
 class RGBA:
-    def __init__(self, r: int, g: int, b: int, a: float | None = None):
-        self.values = (r, g, b, a / 256 if a is not None else None)
+    def __init__(self, r: int, g: int, b: int, a: float | None = None, none: bool = False):
+        if none:
+            self.values = None
+        else:
+            self.values = (r, g, b, a / 256 if a is not None else None)
 
     @property
+    @return_none_if_empty
     def r(self):
+        if self.is_empty():
+            return None
         return self.values[0]
 
     @property
+    @return_none_if_empty
     def g(self):
         return self.values[1]
 
     @property
+    @return_none_if_empty
     def b(self):
         return self.values[2]
 
     @property
+    @return_none_if_empty
     def a(self):
         return self.values[3]
 
@@ -60,10 +78,19 @@ class RGBA:
             )
 
     @staticmethod
+    def from_none(value: str) -> Union["RGBA", None]:
+        if value.strip().lower() == "none":
+            return RGBA(0, 0, 0, 0, none=True)
+
+    @staticmethod
     def from_any(value: str) -> Union["RGBA", None]:
         color = RGBA.from_hex(value)
         color = RGBA.from_rgba(value) if color is None else color
+        color = RGBA.from_none(value) if color is None else color
         return color
+
+    def is_empty(self):
+        return self.values is None
 
     def __str__(self) -> str:
         return str(self.values)

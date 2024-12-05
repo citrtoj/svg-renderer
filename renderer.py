@@ -4,12 +4,27 @@ import xml.etree.ElementTree
 from color import RGBA
 from PIL import Image, ImageDraw
 from copy import deepcopy
+from exceptions import InvalidAttributeException
+from path import parse_path_commands
+
+
+def error_on_missing_attribute(tag_name):
+    def decorator(f):
+        def wrapper(*args, **kwargs):
+            try:
+                return f(*args, **kwargs)
+            except KeyError as e:
+                raise InvalidAttributeException(f"Missing <{tag_name}> attribute: {e.args[0]}")
+
+        return wrapper
+
+    return decorator
 
 
 class Renderer:
     DEFAULT_ATTRIBUTES = {
-        "fill": {"opacity": 1, "color": (255, 255, 255)},
-        "stroke": {"opacity": 1, "color": (0, 0, 0), "width": 5},
+        "fill": {"enabled": True, "opacity": 1, "color": (0, 0, 0)},
+        "stroke": {"enabled": False, "opacity": 1, "color": (0, 0, 0), "width": 1, "linecap": "butt"},
     }
 
     def reset(self):
@@ -47,29 +62,37 @@ class Renderer:
             old_attributes = self.DEFAULT_ATTRIBUTES
         attributes = deepcopy(old_attributes)
 
-        fill = RGBA.from_any(node.attrib["fill"] if "fill" in node.attrib else "")
-        stroke = RGBA.from_any(node.attrib["stroke"] if "stroke" in node.attrib else "")
+        fill_color = RGBA.from_any(node.attrib["fill"] if "fill" in node.attrib else "")
+        stroke_color = RGBA.from_any(node.attrib["stroke"] if "stroke" in node.attrib else "")
 
         opacity = self._parse_opacity(node.attrib["opacity"]) if "opacity" in node.attrib else None
         fill_opacity = (
             self._parse_opacity(node.attrib["fill-opacity"])
             if "fill-opacity" in node.attrib
-            else (fill.a if fill and fill.a else None)
+            else (fill_color.a if fill_color and fill_color.a else None)
         )
         stroke_opacity = (
             self._parse_opacity(node.attrib["stroke-opacity"])
             if "stroke-opacity" in node.attrib
-            else (stroke.a if stroke and stroke.a else None)
+            else (stroke_color.a if stroke_color and stroke_color.a else None)
         )
         if opacity:
             fill_opacity = (fill_opacity if fill_opacity else attributes["fill"]["opacity"]) * opacity
             stroke_opacity = (stroke_opacity if stroke_opacity else attributes["stroke"]["opacity"]) * opacity
-        stroke_width = self._parse_length(node.attrib["stroke-width"]) if "stroke-opacity" in node.attrib else None
+        stroke_width = self._parse_length(node.attrib["stroke-width"]) if "stroke-width" in node.attrib else None
 
-        if fill:
-            attributes["fill"]["color"] = fill.values[:3]
-        if stroke:
-            attributes["stroke"]["color"] = stroke.values[:3]
+        if fill_color:
+            if fill_color.is_empty():
+                attributes["fill"]["enabled"] = False
+            else:
+                attributes["fill"]["color"] = fill_color.values[:3]
+                attributes["fill"]["enabled"] = True
+        if stroke_color:
+            if stroke_color.is_empty():
+                attributes["stroke"]["enabled"] = False
+            else:
+                attributes["stroke"]["color"] = stroke_color.values[:3]
+                attributes["stroke"]["enabled"] = True
         if fill_opacity:
             attributes["fill"]["opacity"] *= fill_opacity
         if stroke_opacity:
@@ -80,16 +103,33 @@ class Renderer:
         return attributes
 
     @staticmethod
-    def _to_pil_colors(attributes):
+    def _to_pil_properties(attributes):
         def normalize_opacity(opacity):
             return min(255, int(opacity * 256))
 
-        return {
-            "fill": (*attributes["fill"]["color"], normalize_opacity(attributes["fill"]["opacity"])),
-            "stroke": (*attributes["stroke"]["color"], normalize_opacity(attributes["stroke"]["opacity"])),
-        }
+        properties = (
+            {
+                "fill": (*attributes["fill"]["color"], normalize_opacity(attributes["fill"]["opacity"])),
+            }
+            if attributes["fill"]["enabled"]
+            else {}
+        )
+        properties.update(
+            {
+                "outline": (
+                    *attributes["stroke"]["color"],  # RGB values
+                    normalize_opacity(attributes["stroke"]["opacity"]),
+                ),
+                "width": attributes["stroke"]["width"],
+            }
+            if attributes["stroke"]["enabled"]
+            else {}
+        )
+        print(properties)
+        return properties
 
-    def _draw_svg(self, node, attributes) -> None:
+    @error_on_missing_attribute("svg")
+    def _draw_svg(self, node) -> None:
         if self.image is not None:
             raise ValueError("<svg> tag already parsed")
         if "width" in node.attrib and "height" in node.attrib:
@@ -97,9 +137,10 @@ class Renderer:
             h = int(node.attrib["height"])
             size = (w, h)
         else:
-            raise ValueError("Could not find dimensions of image. Aborting")
+            raise InvalidAttributeException("Missing <svg> image dimensions")
         self.image = Image.new("RGBA", size)
 
+    @error_on_missing_attribute("ellipse")
     def _draw_ellipse(self, node, attributes) -> Image:
         # TODO: check existence of cx, cy, rx and ry
         cx = self.point[0] + float(node.attrib["cx"])
@@ -107,15 +148,11 @@ class Renderer:
         rx = float(node.attrib["rx"])
         ry = float(node.attrib["ry"])
         overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
-        colors = self._to_pil_colors(attributes)
-        ImageDraw.Draw(overlay).ellipse(
-            [(cx - rx, cy - ry), (cx + rx, cy + ry)],
-            fill=colors["fill"],
-            outline=colors["stroke"],
-            width=attributes["stroke"]["width"],
-        )
+        colors = self._to_pil_properties(attributes)
+        ImageDraw.Draw(overlay).ellipse([(cx - rx, cy - ry), (cx + rx, cy + ry)], **colors)
         return overlay
 
+    @error_on_missing_attribute("rect")
     def _draw_rect(self, node, attributes) -> Image:
         x = self.point[0] + float(node.attrib["x"])
         y = self.point[1] + float(node.attrib["y"])
@@ -129,15 +166,40 @@ class Renderer:
         if "ry" in node.attrib:
             ry = float(node.attrib["ry"])
         overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
-        colors = self._to_pil_colors(attributes)
-        ImageDraw.Draw(overlay).rounded_rectangle(
-            [(x, y), (x + w, y + h)],
-            radius=(rx + ry) / 2,
-            fill=colors["fill"],
-            outline=colors["stroke"],
-            width=attributes["stroke"]["width"],
-        )
+        colors = self._to_pil_properties(attributes)
+        ImageDraw.Draw(overlay).rounded_rectangle([(x, y), (x + w, y + h)], radius=(rx + ry) / 2, **colors)
+
         return overlay
+
+    @error_on_missing_attribute("polyline")
+    def _draw_polyline(self, node, attributes):
+        overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
+        colors = self._to_pil_properties(attributes)
+
+        if "points" not in node.attrib or not node.attrib["points"].strip():
+            raise InvalidAttributeException("Invalid <polyline> tag: missing polyline points")
+
+        points = [tuple(int(y) for y in x.split(",")) for x in node.attrib["points"].strip().split(" ")]
+        print(points)
+        if any(len(coords) != 2 for coords in points):
+            raise InvalidAttributeException(f"Invalid <polyline> tag coordinates: {node.attrib['points']}")
+
+        if attributes["fill"]["enabled"]:
+            ImageDraw.Draw(overlay).polygon(
+                points, **{k: v for k, v in colors.items() if k not in {"outline", "width"}}
+            )
+        if attributes["stroke"]["enabled"]:
+            ImageDraw.Draw(overlay).line(points, fill=colors["outline"], width=colors["width"])
+
+        return overlay
+
+    @error_on_missing_attribute("path")
+    def _draw_path(self, node, attributes):
+        path_data = node.attrib["d"]
+        path_commands = parse_path_commands(path_data)
+        print(path_commands)
+
+        current_point = (0, 0)
 
     def parse_node(self, node, attributes):
         tag = node.tag[len("{http://www.w3.org/2000/svg}") :]
@@ -147,11 +209,15 @@ class Renderer:
         new_attributes = self._update_attributes(node, attributes)
 
         if tag == "svg":
-            self._draw_svg(node, attributes=new_attributes)
+            self._draw_svg(node)
         elif tag == "ellipse":
             overlay = self._draw_ellipse(node, attributes=new_attributes)
         elif tag == "rect":
             overlay = self._draw_rect(node, attributes=new_attributes)
+        elif tag == "polyline":
+            overlay = self._draw_polyline(node, attributes=new_attributes)
+        elif tag == "path":
+            overlay = self._draw_path(node, attributes=new_attributes)
 
         if self.image and overlay:
             self.image = Image.alpha_composite(self.image, overlay)
