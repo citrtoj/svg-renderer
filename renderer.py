@@ -5,7 +5,7 @@ from color import RGBA
 from PIL import Image, ImageDraw
 from copy import deepcopy
 from exceptions import InvalidAttributeException
-from path import parse_path_commands
+from path import path_data_to_points
 
 
 def error_on_missing_attribute(tag_name):
@@ -171,18 +171,8 @@ class Renderer:
 
         return overlay
 
-    @error_on_missing_attribute("polyline")
-    def _draw_polyline(self, node, attributes):
-        overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
+    def _draw_polyline_points(self, overlay, points, attributes):
         colors = self._to_pil_properties(attributes)
-
-        if "points" not in node.attrib or not node.attrib["points"].strip():
-            raise InvalidAttributeException("Invalid <polyline> tag: missing polyline points")
-
-        points = [tuple(int(y) for y in x.split(",")) for x in node.attrib["points"].strip().split(" ")]
-        print(points)
-        if any(len(coords) != 2 for coords in points):
-            raise InvalidAttributeException(f"Invalid <polyline> tag coordinates: {node.attrib['points']}")
 
         if attributes["fill"]["enabled"]:
             ImageDraw.Draw(overlay).polygon(
@@ -193,13 +183,29 @@ class Renderer:
 
         return overlay
 
+    @error_on_missing_attribute("polyline")
+    def _draw_polyline(self, node, attributes):
+        if "points" not in node.attrib or not node.attrib["points"].strip():
+            raise InvalidAttributeException("Invalid <polyline> tag: missing polyline points")
+
+        points = [tuple(int(y) for y in x.split(",")) for x in node.attrib["points"].strip().split(" ")]
+        print(points)
+        if any(len(coords) != 2 for coords in points):
+            raise InvalidAttributeException(f"Invalid <polyline> tag coordinates: {node.attrib['points']}")
+
+        overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
+        return self._draw_polyline_points(overlay, points, attributes)
+
     @error_on_missing_attribute("path")
     def _draw_path(self, node, attributes):
         path_data = node.attrib["d"]
-        path_commands = parse_path_commands(path_data)
-        print(path_commands)
 
-        current_point = (0, 0)
+        points = path_data_to_points(path_data)
+        overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
+        for subpath in points:
+            overlay = self._draw_polyline_points(overlay, subpath, attributes)
+
+        return overlay
 
     def parse_node(self, node, attributes):
         tag = node.tag[len("{http://www.w3.org/2000/svg}") :]
@@ -208,16 +214,17 @@ class Renderer:
 
         new_attributes = self._update_attributes(node, attributes)
 
-        if tag == "svg":
-            self._draw_svg(node)
-        elif tag == "ellipse":
-            overlay = self._draw_ellipse(node, attributes=new_attributes)
-        elif tag == "rect":
-            overlay = self._draw_rect(node, attributes=new_attributes)
-        elif tag == "polyline":
-            overlay = self._draw_polyline(node, attributes=new_attributes)
-        elif tag == "path":
-            overlay = self._draw_path(node, attributes=new_attributes)
+        match tag:
+            case "svg":
+                self._draw_svg(node)
+            case "ellipse":
+                overlay = self._draw_ellipse(node, attributes=new_attributes)
+            case "rect":
+                overlay = self._draw_rect(node, attributes=new_attributes)
+            case "polyline":
+                overlay = self._draw_polyline(node, attributes=new_attributes)
+            case "path":
+                overlay = self._draw_path(node, attributes=new_attributes)
 
         if self.image and overlay:
             self.image = Image.alpha_composite(self.image, overlay)
