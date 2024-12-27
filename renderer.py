@@ -1,20 +1,31 @@
-import re
 import math
+import re
 import xml.etree.ElementTree
-from color import RGBA
-from PIL import Image, ImageDraw
 from copy import deepcopy
+
+from PIL import Image, ImageDraw
+
+from color import RGBA
+from common import Point
 from exceptions import InvalidAttributeException
-from path import path_data_to_points
+from path import path_data_to_subpaths
 
 
-def error_on_missing_attribute(tag_name):
+def error_on_missing_attribute(tag_name: str):
+    """Helper decorator for methods of class Renderer;
+    replaces KeyErrors caused by attempts to access missing attributes
+    with an `InvalidAttributeException` with a more helpful message.
+
+    Args:
+        tag_name (str): name of SVG tag
+    """
+
     def decorator(f):
         def wrapper(*args, **kwargs):
             try:
                 return f(*args, **kwargs)
             except KeyError as e:
-                raise InvalidAttributeException(f"Missing <{tag_name}> attribute: {e.args[0]}")
+                raise InvalidAttributeException(f"Missing <{tag_name}> attribute: {e.args[0]}") from e
 
         return wrapper
 
@@ -22,6 +33,8 @@ def error_on_missing_attribute(tag_name):
 
 
 class Renderer:
+    """Class used to render a parsed SVG XML to a PIL image object."""
+
     DEFAULT_ATTRIBUTES = {
         "fill": {"enabled": True, "opacity": 1, "color": (0, 0, 0)},
         "stroke": {"enabled": False, "opacity": 1, "color": (0, 0, 0), "width": 1, "linecap": "butt"},
@@ -29,7 +42,8 @@ class Renderer:
 
     def reset(self):
         self.image = None
-        self.size = tuple()
+        self.size = (1, 1)  # width, height
+        self.viewbox = (0, 0, 1, 1)  # xmin, ymin, width, height
         self.point = [0.0, 0.0]
 
     def __init__(self):
@@ -56,6 +70,20 @@ class Renderer:
     @staticmethod
     def _parse_opacity(value: str) -> int:
         return Renderer._parse_percent(value, lambda x: float(x), lambda x: float(x) * 100)
+
+    @staticmethod
+    def _parse_canvas_size(value: str) -> int:
+        measurement_unit_values = {"px": 1, "pt": 1.3334, "pc": 16}
+        value = value.replace(" ", "").lower()
+        match = re.match(r"^-?\d+(\.\d+)?([a-zA-Z0-9]+)?$", value)
+        if not match:
+            raise ValueError(f"Invalid value for canvas size: {value}")
+        measurement_unit = match.group(2)
+        if not measurement_unit:
+            return int(float(value))
+        if measurement_unit in measurement_unit_values:
+            return int(float(value[:-2])) * measurement_unit_values[measurement_unit]
+        return int(float(value[: -len(measurement_unit)]))
 
     def _update_attributes(self, node, old_attributes=None):
         if not old_attributes:
@@ -117,7 +145,7 @@ class Renderer:
         properties.update(
             {
                 "outline": (
-                    *attributes["stroke"]["color"],  # RGB values
+                    *attributes["stroke"]["color"],
                     normalize_opacity(attributes["stroke"]["opacity"]),
                 ),
                 "width": attributes["stroke"]["width"],
@@ -125,35 +153,62 @@ class Renderer:
             if attributes["stroke"]["enabled"]
             else {}
         )
-        print(properties)
         return properties
 
+    def project_point(self, coord: Point) -> Point:
+        return (
+            (coord[0] - self.viewbox[0]) / self.viewbox[2] * self.size[0],
+            (coord[1] - self.viewbox[1]) / self.viewbox[3] * self.size[1],
+        )
+
     @error_on_missing_attribute("svg")
-    def _draw_svg(self, node) -> None:
+    def draw_svg(self, node) -> None:
         if self.image is not None:
             raise ValueError("<svg> tag already parsed")
-        if "width" in node.attrib and "height" in node.attrib:
-            w = int(node.attrib["width"])
-            h = int(node.attrib["height"])
-            size = (w, h)
-        else:
+        has_width_height = "width" in node.attrib and "height" in node.attrib
+        has_viewbox = "viewBox" in node.attrib or "viewbox" in node.attrib
+
+        if has_width_height:
+            width_data = node.attrib["width"]
+            height_data = node.attrib["height"]
+            w = self._parse_canvas_size(width_data)
+            h = self._parse_canvas_size(height_data)
+            if w < 0 or h < 0:
+                raise ValueError(f"Invalid <svg> width and height: {w} {h}")
+            self.size = (w, h)
+            if not has_viewbox:
+                self.viewbox = (0, 0, *self.size)
+
+        if has_viewbox:
+            viewbox_data = node.attrib["viewBox" if "viewBox" in node.attrib else "viewbox"]
+            viewbox = tuple(int(x) for x in viewbox_data.split(" ") if x != "")
+            if len(viewbox) != 4 or viewbox[2] < 0 or viewbox[3] < 0:
+                raise InvalidAttributeException(f"Bad <svg> viewBox: {viewbox_data}")
+            self.viewbox = viewbox
+            if not has_width_height:
+                self.size = (self.viewbox[2],)
+
+        if not has_width_height and not has_viewbox:
             raise InvalidAttributeException("Missing <svg> image dimensions")
-        self.image = Image.new("RGBA", size)
+        self.image = Image.new("RGBA", self.size)
 
     @error_on_missing_attribute("ellipse")
-    def _draw_ellipse(self, node, attributes) -> Image:
-        # TODO: check existence of cx, cy, rx and ry
+    def draw_ellipse(self, node, attributes) -> Image:
         cx = self.point[0] + float(node.attrib["cx"])
         cy = self.point[1] + float(node.attrib["cy"])
         rx = float(node.attrib["rx"])
         ry = float(node.attrib["ry"])
         overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
         colors = self._to_pil_properties(attributes)
-        ImageDraw.Draw(overlay).ellipse([(cx - rx, cy - ry), (cx + rx, cy + ry)], **colors)
+        ImageDraw.Draw(overlay).ellipse(
+            # [self.project_point(x) for x in [(cx - rx, cy - ry), (cx + rx, cy + ry)]], **colors
+            [(cx - rx, cy - ry), (cx + rx, cy + ry)],
+            **colors,
+        )
         return overlay
 
     @error_on_missing_attribute("rect")
-    def _draw_rect(self, node, attributes) -> Image:
+    def draw_rect(self, node, attributes) -> Image:
         x = self.point[0] + float(node.attrib["x"])
         y = self.point[1] + float(node.attrib["y"])
         w = float(node.attrib["width"])
@@ -167,11 +222,15 @@ class Renderer:
             ry = float(node.attrib["ry"])
         overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
         colors = self._to_pil_properties(attributes)
-        ImageDraw.Draw(overlay).rounded_rectangle([(x, y), (x + w, y + h)], radius=(rx + ry) / 2, **colors)
+        ImageDraw.Draw(overlay).rounded_rectangle(
+            list(map(self.project_point, [(x, y), (x + w, y + h)])),
+            radius=(self.project_point((rx, 0))[0] + self.project_point((0, ry))[1]) / 2,
+            **colors,
+        )
 
         return overlay
 
-    def _draw_polyline_points(self, overlay, points, attributes):
+    def _draw_polyline_points(self, overlay, points, attributes) -> Image:
         colors = self._to_pil_properties(attributes)
 
         if attributes["fill"]["enabled"]:
@@ -184,47 +243,45 @@ class Renderer:
         return overlay
 
     @error_on_missing_attribute("polyline")
-    def _draw_polyline(self, node, attributes):
+    def draw_polyline(self, node, attributes):
         if "points" not in node.attrib or not node.attrib["points"].strip():
             raise InvalidAttributeException("Invalid <polyline> tag: missing polyline points")
 
-        points = [tuple(int(y) for y in x.split(",")) for x in node.attrib["points"].strip().split(" ")]
-        print(points)
+        points = [tuple(float(y) for y in x.split(",")) for x in node.attrib["points"].strip().split(" ")]
         if any(len(coords) != 2 for coords in points):
             raise InvalidAttributeException(f"Invalid <polyline> tag coordinates: {node.attrib['points']}")
 
         overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
-        return self._draw_polyline_points(overlay, points, attributes)
+        return self._draw_polyline_points(overlay, list(map(self.project_point, points)), attributes)
 
     @error_on_missing_attribute("path")
-    def _draw_path(self, node, attributes):
+    def draw_path(self, node, attributes):
         path_data = node.attrib["d"]
 
-        points = path_data_to_points(path_data)
+        points = path_data_to_subpaths(path_data)
         overlay = Image.new("RGBA", self.image.size, (255, 255, 255, 0))
         for subpath in points:
-            overlay = self._draw_polyline_points(overlay, subpath, attributes)
+            overlay = self._draw_polyline_points(overlay, list(map(self.project_point, subpath)), attributes)
 
         return overlay
 
     def parse_node(self, node, attributes):
         tag = node.tag[len("{http://www.w3.org/2000/svg}") :]
-        print(f"Processing tag: {tag}")
         overlay = None
 
         new_attributes = self._update_attributes(node, attributes)
 
         match tag:
             case "svg":
-                self._draw_svg(node)
+                self.draw_svg(node)
             case "ellipse":
-                overlay = self._draw_ellipse(node, attributes=new_attributes)
+                overlay = self.draw_ellipse(node, attributes=new_attributes)
             case "rect":
-                overlay = self._draw_rect(node, attributes=new_attributes)
+                overlay = self.draw_rect(node, attributes=new_attributes)
             case "polyline":
-                overlay = self._draw_polyline(node, attributes=new_attributes)
+                overlay = self.draw_polyline(node, attributes=new_attributes)
             case "path":
-                overlay = self._draw_path(node, attributes=new_attributes)
+                overlay = self.draw_path(node, attributes=new_attributes)
 
         if self.image and overlay:
             self.image = Image.alpha_composite(self.image, overlay)

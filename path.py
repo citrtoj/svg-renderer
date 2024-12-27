@@ -1,10 +1,11 @@
+import math
 import re
+from copy import deepcopy
 from enum import Enum
 from functools import partial
-import math
 
+from common import Point
 
-type Point = tuple[float, float]
 type PathCommand = tuple[str, tuple[float]]
 
 
@@ -257,11 +258,14 @@ def path_commands_to_points(commands: list[PathCommand], resolution) -> list[lis
     paths: list[list[Point]] = []
     subpath_points: list[Point] = []
 
+    last_control_point = None  # for S/T commands
+
     def end_subpath():
         nonlocal subpath_points, current_point, paths
         if len(subpath_points) >= 2:
-            paths.append(subpath_points)
-        subpath_points = [current_point]
+            paths.append(deepcopy(subpath_points))
+        subpath_points.clear()
+        subpath_points.append(current_point)
 
     def values_to_points(values: tuple[float]):
         if len(values) % 2 != 0:
@@ -269,8 +273,6 @@ def path_commands_to_points(commands: list[PathCommand], resolution) -> list[lis
         return list(zip(values[0::2], values[1::2]))
 
     for i, command in enumerate(commands):
-        exception_string = f"Invalid command ({command[0]} {' '.join(str(value) for value in command[1])}) in SVG path"
-
         absolute_command = relative_to_absolute(command, current_point)
         values = absolute_command[1]
 
@@ -278,33 +280,42 @@ def path_commands_to_points(commands: list[PathCommand], resolution) -> list[lis
             case "M":
                 point = (values[0], values[1])
                 current_point = point
-                if i > 0 and commands[i - 1][0].upper() == "M":
-                    # it's interpreted as a lineto; add to current points
-                    subpath_points.append(point)
-                else:
+                if i == 0 or commands[i - 1][0].upper() != "M":
                     # first moveto in the sequence
                     end_subpath()
+                subpath_points.append(point)
             case "Z":
+                # add closing line manually
                 subpath_points.append(subpath_points[0])
+                current_point = subpath_points[0]
+                # close the subpath
                 end_subpath()
-            case "C":
+            case "C" | "Q":
                 command_points = values_to_points(values)
-                if len(command_points) != 3:
-                    raise ValueError(exception_string)
-                subpath_points.extend(cubic_bezier(current_point, *command_points, resolution))
-            case "S":
+                subpath_points.extend(
+                    cubic_bezier(current_point, *command_points, resolution)
+                    if absolute_command[0] == "C"
+                    else quadratic_bezier(current_point, *command_points, resolution)
+                )
+                last_control_point = command_points[-2]
+            case "S" | "T":
                 first_control_point = current_point
-                prev_command = commands[i - 1]  # TODO fix, IndexError
-                if i > 0 and prev_command[0].upper() in {"S", "C"}:
-                    prev_absolute_command = relative_to_absolute(prev_command, current_point)
-                    first_control_point = reflection(
-                        values_to_points(prev_absolute_command[1])[1 if prev_absolute_command[0].upper() == "C" else 0],
-                        current_point,
-                    )
+                prev_command_allowed_types = {"S", "C"} if absolute_command[0] == "S" else {"Q", "T"}
+                if (
+                    i > 0
+                    and commands[i - 1][0].upper() in prev_command_allowed_types
+                    and last_control_point is not None
+                ):
+                    first_control_point = reflection(last_control_point, current_point)
                 command_points = values_to_points(values)
-                if len(command_points) != 2:
-                    raise ValueError(exception_string)
-                subpath_points.extend(cubic_bezier(current_point, first_control_point, *command_points, resolution))
+
+                subpath_points.extend(
+                    cubic_bezier(current_point, first_control_point, *command_points, resolution)
+                    if absolute_command[0] == "S"
+                    else quadratic_bezier(current_point, first_control_point, *command_points, resolution)
+                )
+                last_control_point = command_points[0]
+
             case "V":
                 subpath_points.append((current_point[0], values[0]))
             case "H":
@@ -336,7 +347,7 @@ def path_commands_to_points(commands: list[PathCommand], resolution) -> list[lis
     return paths
 
 
-def path_data_to_points(data: str, resolution=1000) -> list[list[Point]]:
+def path_data_to_subpaths(data: str, resolution=1000) -> list[list[Point]]:
     """Return list of subpaths (lists of points) from a path data string resulted from the
     `d` attribute of `<path>` tags in SVGs.
 
