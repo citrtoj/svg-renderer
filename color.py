@@ -4,7 +4,7 @@ from typing import Union
 
 def return_none_if_empty(f):
     def wrapper(self, *args, **kwargs):
-        if self.is_empty():
+        if self.is_none():
             return None
         return f(self, *args, **kwargs)
 
@@ -21,8 +21,6 @@ class RGBA:
     @property
     @return_none_if_empty
     def r(self):
-        if self.is_empty():
-            return None
         return self.values[0]
 
     @property
@@ -83,13 +81,15 @@ class RGBA:
             return RGBA(0, 0, 0, 0, none=True)
 
     @staticmethod
-    def from_any(value: str) -> Union["RGBA", None]:
+    def from_any(value: str | None) -> Union["RGBA", None]:
+        if not value:
+            return None
         color = RGBA.from_hex(value)
         color = RGBA.from_rgba(value) if color is None else color
         color = RGBA.from_none(value) if color is None else color
         return color
 
-    def is_empty(self):
+    def is_none(self):
         return self.values is None
 
     def __str__(self) -> str:

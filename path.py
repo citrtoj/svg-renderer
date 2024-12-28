@@ -189,44 +189,37 @@ class PathCommandTypes(Enum):
 
 def parse_path_commands(path_data: str) -> list[PathCommand]:
     commands = []
-
     pattern = re.compile(r"([a-zA-Z])|([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)")
     matches = pattern.findall(path_data)
-
     current_command = None
-    current_numbers = []
+    current_values = []
 
-    def add_commands(command, numbers):
-        if command is not None:
-            args_len = PathCommandTypes.get_length(command)
-
-            if args_len == 0:
-                if len(numbers) == 0:
-                    commands.append((command, tuple()))
-                else:
-                    raise ValueError(f"Invalid command {command} with too many numbers ({len(numbers)})")
-
-            else:
-                if len(numbers) % args_len != 0:
-                    raise ValueError(f"Not enough numbers ({len(numbers)}) for all commands of same type {command}")
-                for i in range(len(numbers) // args_len):
-                    commands.append(
-                        (
-                            command,
-                            tuple(numbers[j] for j in range(i * args_len, (i + 1) * args_len)),
-                        )
+    def add_command(command, values):
+        command_args_count = PathCommandTypes.get_length(command)
+        if command_args_count == 0 and len(values) == 0:
+            commands.append((command, tuple()))
+        elif command_args_count > 0 and len(values) % command_args_count == 0:
+            for i in range(0, len(values), command_args_count):
+                commands.append(
+                    (
+                        command,
+                        tuple(values[i : i + command_args_count]),
                     )
+                )
+        else:
+            raise ValueError(f'Wrong length of arguments ({len(values)}) for command "{command} {values}"')
 
     for match in matches:
         if match[0]:
-            add_commands(current_command, current_numbers)
+            if current_command is not None:
+                add_command(current_command, current_values)
             current_command = match[0]
-            current_numbers = []
+            current_values = []
         elif match[1]:
-            current_numbers.append(float(match[1]))
+            current_values.append(float(match[1]))
 
     if current_command is not None:
-        add_commands(current_command, current_numbers)
+        add_command(current_command, current_values)
 
     return commands
 
@@ -347,16 +340,16 @@ def path_commands_to_points(commands: list[PathCommand], resolution) -> list[lis
     return paths
 
 
-def path_data_to_subpaths(data: str, resolution=1000) -> list[list[Point]]:
+def path_data_to_subpaths(data: str, path_resolution=1000) -> list[list[Point]]:
     """Return list of subpaths (lists of points) from a path data string resulted from the
     `d` attribute of `<path>` tags in SVGs.
 
     Args:
         data (str): path data string
-        resolution (int, optional): amount of points to use when drawing curves. Defaults to 1000.
+        path_resolution (int, optional): amount of points to use when drawing curves. Defaults to 1000.
 
     Returns:
         list[Point]: list of absolute points to draw on the image, in given order
     """
     commands = parse_path_commands(data)
-    return path_commands_to_points(commands, resolution=resolution)
+    return path_commands_to_points(commands, resolution=path_resolution)
