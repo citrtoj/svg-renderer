@@ -85,18 +85,21 @@ class Renderer:
         return value_on_percent(value)
 
     def parse_length(self, value: str):
+        """Parse a string which represents a length (for example, for stroke width)."""
         return Renderer.parse_possible_percentage(
             value, lambda x: int(float(x)), lambda x: int(float(x) / 100 * self.diagonal_length())
         )
 
     @staticmethod
     def parse_opacity(value: str) -> float:
+        """Parse a string which represents an opacity (for example, for stroke/fill opacity)."""
         return (
             Renderer.parse_possible_percentage(value, lambda x: float(x), lambda x: float(x) * 100) if value else None
         )
 
     @staticmethod
     def parse_canvas_size(value: str) -> int:
+        """Parse a string which represents a size (for example, for width/height attributes."""
         measurement_unit_values = {"px": 1, "pt": 1.3334, "pc": 16}
         value = value.replace(" ", "").lower()
         match = re.match(r"^-?\d+(\.\d+)?([a-zA-Z0-9]+)?$", value)
@@ -110,6 +113,7 @@ class Renderer:
         return int(float(value[: -len(measurement_unit)]))
 
     def update_attributes(self, node, old_attributes: dict) -> dict:
+        """Update dictionary of attributes (drawing context) using a node's attributes."""
         attributes = deepcopy(old_attributes)
 
         def get_opacity(attr_name, fallback_opacity):
@@ -155,7 +159,17 @@ class Renderer:
         return attributes
 
     @staticmethod
-    def _to_pil_properties(attributes):
+    def _to_pil_properties(attributes: dict) -> dict:
+        """Convert an attributes dictionary into a dictionary suitable for PIL functions
+        (such that it can be used as argument with the * syntax).
+
+        Args:
+            attributes (dict): dictionary of attributes
+
+        Returns:
+            dict: new dictionary with PIL-appropriate values
+        """
+
         def normalize_opacity(opacity):
             return min(255, int(opacity * 256))
 
@@ -180,6 +194,14 @@ class Renderer:
         return properties
 
     def project_point(self, coord: Point) -> Point:
+        """Project a point from the SVG viewbox space to the pixel canvas.
+
+        Args:
+            coord (Point): point to be projected
+
+        Returns:
+            Point: projected point
+        """
         return (
             (coord[0] - self.viewbox[0]) / self.viewbox[2] * self.size[0],
             (coord[1] - self.viewbox[1]) / self.viewbox[3] * self.size[1],
@@ -187,6 +209,11 @@ class Renderer:
 
     @error_on_missing_attribute("svg")
     def init_svg(self, node) -> None:
+        """Initialize image using data from a `<svg>` node in the XML.
+
+        Args:
+            node: SVG node
+        """
         if self.image is not None:
             raise ValueError("<svg> tag already parsed")
 
@@ -218,6 +245,7 @@ class Renderer:
 
     @error_on_missing_attribute("ellipse")
     def draw_ellipse(self, node, overlay, attributes: dict) -> Image:
+        """Draw an ellipse onto a given overlay with given attributes."""
         cx, cy = (self.viewbox[0] + float(node.attrib["cx"]), self.viewbox[1] + float(node.attrib["cy"]))
         rx, ry = (float(node.attrib["rx"]), float(node.attrib["ry"]))
         colors = self._to_pil_properties(attributes)
@@ -228,6 +256,7 @@ class Renderer:
 
     @error_on_missing_attribute("rect")
     def draw_rect(self, node, overlay, attributes: dict) -> Image:
+        """Draw a rectangle onto a given overlay with given attributes."""
         x, y = (self.viewbox[0] + float(node.attrib["x"]), self.viewbox[1] + float(node.attrib["y"]))
         w, h = (float(node.attrib["width"]), float(node.attrib["height"]))
         rx = ry = 0
@@ -242,7 +271,8 @@ class Renderer:
             **colors,
         )
 
-    def _draw_polyline_points(self, overlay, points: list[Point], attributes: dict) -> Image:
+    def _draw_polyline(self, overlay, points: list[Point], attributes: dict) -> Image:
+        """Helper function to draw a polyline onto a given overlay with given attributes."""
         colors = self._to_pil_properties(attributes)
         if attributes["fill"]["enabled"]:
             ImageDraw.Draw(overlay).polygon(
@@ -253,21 +283,26 @@ class Renderer:
 
     @error_on_missing_attribute("polyline")
     def draw_polyline(self, node, overlay, attributes: dict):
+        """Draw a polyline onto a given overlay with given attributes."""
         if not node.attrib.get("points", "").strip():
             raise InvalidAttributeException("Invalid <polyline> tag: missing polyline points")
         points = [tuple(float(y) for y in x.split(",")) for x in node.attrib["points"].strip().split(" ")]
         if any(len(coords) != 2 for coords in points):
             raise InvalidAttributeException(f"Invalid <polyline> tag coordinates: {node.attrib['points']}")
-        self._draw_polyline_points(overlay, list(map(self.project_point, points)), attributes)
+        self._draw_polyline(overlay, list(map(self.project_point, points)), attributes)
 
     @error_on_missing_attribute("path")
     def draw_path(self, node, overlay, attributes: dict):
+        """Draw a path onto a given overlay, using the polyline draw helper, with given attributes."""
         path_data = node.attrib["d"]
-        points = path_data_to_subpaths(path_data, path_resolution=int(self.size[0] / 20))
+        points = path_data_to_subpaths(path_data, path_resolution=int(self.size[0] / 5))
         for subpath in points:
-            self._draw_polyline_points(overlay, list(map(self.project_point, subpath)), attributes)
+            self._draw_polyline(overlay, list(map(self.project_point, subpath)), attributes)
 
     def parse_node(self, node, attributes: dict):
+        """Parse an SVG XML node, dispatching the drawing operation to the appropriate function
+        according to the name of the tag.
+        """
         tag = node.tag[len("{http://www.w3.org/2000/svg}") :]
         new_attributes = self.update_attributes(node, attributes)
         overlay = Image.new("RGBA", self.size, (255, 255, 255, 0))
@@ -291,6 +326,11 @@ class Renderer:
             self.parse_node(child, new_attributes)
 
     def render(self, xml: xml.etree.ElementTree):
+        """Render a SVG tree onto `self.image`.
+
+        Args:
+            xml (xml.etree.ElementTree): XML tree of SVG
+        """
         self.reset()
         self.parse_node(xml.getroot(), attributes=self.DEFAULT_ATTRIBUTES)
         return self
