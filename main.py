@@ -1,5 +1,6 @@
 import argparse
 import xml.etree.ElementTree
+import sys
 
 from renderer import Renderer
 
@@ -10,9 +11,9 @@ def parse_xml(xml_path: str):
 
 def get_args():
     parser = argparse.ArgumentParser(description="Render an SVG file to a PNG image.")
-    parser.add_argument("svg_path", type=str, help="path to SVG path.")
+    parser.add_argument("svg_path", type=str, help="path to SVG path")
     parser.add_argument(
-        "-o", "--output", type=str, default="output.png", help="The output PNG path (default is 'output.png')."
+        "-o", "--output", type=str, default="output.png", help="output PNG path (default is 'output.png')"
     )
 
     args = parser.parse_args()
@@ -20,12 +21,17 @@ def get_args():
 
 
 def main():
-    args = get_args()
-
-    xml = parse_xml(args.svg_path)
-    renderer = Renderer().render(xml)
-    image = renderer.image
-    image.save("output.png")
+    try:
+        args = get_args()
+        xml = parse_xml(args.svg_path)
+        renderer = Renderer().render(xml)
+        image = renderer.image
+        image.save(args.output)
+        print(f'\033[92mSuccessfully saved output image to: "{args.output}"\033[0m')
+    except Exception as e:
+        exception_name = type(e).__name__
+        print(f"\033[91mError while processing image ({exception_name}): \033[0m{e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

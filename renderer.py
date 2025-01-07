@@ -86,8 +86,15 @@ class Renderer:
 
     def parse_length(self, value: str):
         """Parse a string which represents a length (for example, for stroke width)."""
+
+        def val_on_no_percent(x):
+            projected_len = self.project_point((self.viewbox[0] + float(x), self.viewbox[1] + float(x)))
+            return int((projected_len[0] + projected_len[1]) / 2)
+
         return Renderer.parse_possible_percentage(
-            value, lambda x: int(float(x)), lambda x: int(float(x) / 100 * self.diagonal_length())
+            value,
+            val_on_no_percent,
+            lambda x: int(float(x) / 100 * self.diagonal_length()),
         )
 
     @staticmethod
@@ -235,7 +242,7 @@ class Renderer:
                 raise InvalidAttributeException(f"Bad <svg> viewBox: {viewbox_data}")
             self.viewbox = viewbox
             if not has_width_height:
-                self.size = (self.viewbox[2], self.viewbox[3])
+                self.size = (int(self.viewbox[2]), int(self.viewbox[3]))
         else:
             self.viewbox = (0, 0, *self.size)
 
@@ -251,6 +258,23 @@ class Renderer:
         colors = self._to_pil_properties(attributes)
         ImageDraw.Draw(overlay).ellipse(
             [self.project_point(x) for x in [(cx - rx, cy - ry), (cx + rx, cy + ry)]],
+            **colors,
+        )
+
+    @error_on_missing_attribute("circle")
+    def draw_circle(self, node, overlay, attributes: dict) -> Image:
+        """Draw a circle onto a given overlay with given attributes."""
+        cx, cy = (
+            self.viewbox[0] + float(node.attrib["cx"]),
+            self.viewbox[1] + float(node.attrib["cy"]),
+        )
+        r = float(node.attrib["r"])
+        colors = self._to_pil_properties(attributes)
+        ImageDraw.Draw(overlay).ellipse(
+            [
+                self.project_point((cx - r, cy - r)),
+                self.project_point((cx + r, cy + r)),
+            ],
             **colors,
         )
 
@@ -308,6 +332,7 @@ class Renderer:
         overlay = Image.new("RGBA", self.size, (255, 255, 255, 0))
         methods = {
             "ellipse": self.draw_ellipse,
+            "circle": self.draw_circle,
             "rect": self.draw_rect,
             "polyline": self.draw_polyline,
             "path": self.draw_path,
