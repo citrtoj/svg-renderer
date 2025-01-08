@@ -305,6 +305,14 @@ class Renderer:
         if attributes["stroke"]["enabled"]:
             ImageDraw.Draw(overlay).line(points, fill=colors["outline"], width=colors["width"])
 
+    @error_on_missing_attribute("line")
+    def draw_line(self, node, overlay, attributes: dict):
+        """Draw a line onto a given overlay with given attributes."""
+        p1 = (float(node.attrib["x1"]), float(node.attrib["y1"]))
+        p2 = (float(node.attrib["x2"]), float(node.attrib["y2"]))
+        points = [self.project_point(p1), self.project_point(p2)]
+        self._draw_polyline(overlay, points, attributes)
+
     @error_on_missing_attribute("polyline")
     def draw_polyline(self, node, overlay, attributes: dict):
         """Draw a polyline onto a given overlay with given attributes."""
@@ -336,6 +344,7 @@ class Renderer:
             "rect": self.draw_rect,
             "polyline": self.draw_polyline,
             "path": self.draw_path,
+            "line": self.draw_line,
         }
 
         if tag == "svg":
